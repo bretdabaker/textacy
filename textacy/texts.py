@@ -7,6 +7,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 
 from collections import Counter
 import copy
+import os
 import re
 
 from cytoolz import itertoolz
@@ -15,8 +16,8 @@ from spacy.tokens.token import Token as stoken
 from spacy.tokens.span import Span as sspan
 
 from textacy.compat import str, zip
-from textacy import data, extract, spacy_utils, text_stats, text_utils, keyterms
 from textacy.representations import network, vsm
+from textacy import data, extract, fileio, spacy_utils, text_stats, text_utils, keyterms
 
 
 class TextDoc(object):
@@ -91,6 +92,49 @@ class TextDoc(object):
     def __iter__(self):
         for tok in self.spacy_doc:
             yield tok
+
+    def save(self, path, fname_prefix=None):
+        """
+        Save serialized TextDoc content and metadata to disk.
+
+        Args:
+            path (str): directory on disk where content + metadata will be saved
+            fname_prefix (str, optional): prepend standard filenames 'spacy_doc.bin'
+                and 'metadata.json' with additional identifying information
+        """
+        if fname_prefix:
+            meta_fname = os.path.join(path, '_'.join([fname_prefix, 'metadata.json']))
+            doc_fname = os.path.join(path, '_'.join([fname_prefix, 'spacy_doc.bin']))
+        else:
+            meta_fname = os.path.join(path, 'metadata.json')
+            doc_fname = os.path.join(path, 'spacy_doc.bin')
+        fileio.write_json(
+            dict({'textacy': {'lang': self.lang}}, **self.metadata),
+            meta_fname)
+        fileio.write_spacy_docs(self.spacy_doc, doc_fname)
+
+    @classmethod
+    def load(cls, path, fname_prefix=None):
+        """
+        Load serialized content and metadata from disk, and initialize a TextDoc.
+
+        Args:
+            path (str): directory on disk where content + metadata are saved
+            fname_prefix (str, optional): additional identifying information
+                prepended to standard filenames 'spacy_doc.bin' and 'metadata.json'
+                when saving to disk
+        """
+        if fname_prefix:
+            meta_fname = os.path.join(path, '_'.join([fname_prefix, 'metadata.json']))
+            docs_fname = os.path.join(path, '_'.join([fname_prefix, 'spacy_doc.bin']))
+        else:
+            meta_fname = os.path.join(path, 'metadata.json')
+            docs_fname = os.path.join(path, 'spacy_doc.bin')
+        metadata = fileio.read_json(meta_fname)
+        lang = metadata.pop('textacy').pop('lang')
+        spacy_vocab = data.load_spacy_pipeline(lang).vocab
+        return cls(list(fileio.read_spacy_docs(spacy_vocab, docs_fname)[0],
+                   lang=lang, metadata=metadata))
 
     @property
     def tokens(self):
@@ -589,6 +633,56 @@ class TextCorpus(object):
     def __iter__(self):
         for doc in self.docs:
             yield doc
+
+    def save(self, path, fname_prefix=None):
+        """
+        Save serialized TextCorpus content and metadata to disk.
+
+        Args:
+            path (str): directory on disk where content + metadata will be saved
+            fname_prefix (str, optional): prepend standard filenames 'spacy_docs.bin'
+                and 'metadatas.json' with additional identifying information
+        """
+        if fname_prefix:
+            info_fname = os.path.join(path, '_'.join([fname_prefix, 'info.json']))
+            meta_fname = os.path.join(path, '_'.join([fname_prefix, 'metadatas.json']))
+            docs_fname = os.path.join(path, '_'.join([fname_prefix, 'spacy_docs.bin']))
+        else:
+            info_fname = os.path.join(path, 'info.json')
+            meta_fname = os.path.join(path, 'metadatas.json')
+            docs_fname = os.path.join(path, 'spacy_docs.bin')
+        fileio.write_json({'lang': self.lang}, info_fname)
+        fileio.write_json_lines((doc.metadata for doc in self), meta_fname)
+        fileio.write_spacy_docs((doc.spacy_doc for doc in self), docs_fname)
+
+    @classmethod
+    def load(cls, path, fname_prefix=None):
+        """
+        Load serialized content and metadata from disk, and initialize a TextCorpus.
+
+        Args:
+            path (str): directory on disk where content + metadata are saved
+            fname_prefix (str, optional): additional identifying information
+                prepended to standard filenames 'spacy_docs.bin' and 'metadatas.json'
+                when saving to disk
+        """
+        if fname_prefix:
+            info_fname = os.path.join(path, '_'.join([fname_prefix, 'info.json']))
+            meta_fname = os.path.join(path, '_'.join([fname_prefix, 'metadatas.json']))
+            docs_fname = os.path.join(path, '_'.join([fname_prefix, 'spacy_docs.bin']))
+        else:
+            info_fname = os.path.join(path, 'info.json')
+            meta_fname = os.path.join(path, 'metadatas.json')
+            docs_fname = os.path.join(path, 'spacy_docs.bin')
+        lang = list(fileio.read_json(info_fname))[0]['lang']
+        textcorpus = TextCorpus(lang)
+        metadatas = fileio.read_json_lines(meta_fname)
+        spacy_docs = fileio.read_spacy_docs(textcorpus.spacy_vocab, docs_fname)
+        for spacy_doc, metadata in zip(spacy_docs, metadatas):
+            textcorpus.add_doc(
+                TextDoc(spacy_doc, spacy_pipeline=textcorpus.spacy_pipeline,
+                        lang=lang, metadata=metadata))
+        return textcorpus
 
     @classmethod
     def from_texts(cls, lang, texts, metadata=None, n_threads=2, batch_size=1000):
